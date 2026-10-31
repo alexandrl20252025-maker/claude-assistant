@@ -1,0 +1,24 @@
+# Шаблон. Настоящий wrangler.toml генерирует scripts/deploy.ts (id базы и ресурсов агента).
+name = "claude-assistant-bot"
+main = "src/index.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[triggers]
+crons = ["*/2 * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "claude-assistant-db"
+database_id = "__D1_ID__"
+
+[vars]
+AGENT_ID = "__AGENT_ID__"
+SCHEDULED_AGENT_ID = "__SCHEDULED_AGENT_ID__"
+ENVIRONMENT_ID = "__ENVIRONMENT_ID__"
+MEMORY_STORE_ID = "__MEMORY_STORE_ID__"
+DIGEST_DEPLOYMENT_ID = "__DIGEST_DEPLOYMENT_ID__"
+MONITOR_DEPLOYMENT_ID = "__MONITOR_DEPLOYMENT_ID__"
+CHAT_BUDGET_CENTS = "__CHAT_BUDGET_CENTS__"
+WORKSPACE = "__WORKSPACE__"
