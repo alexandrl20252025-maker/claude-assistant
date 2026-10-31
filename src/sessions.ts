@@ -161,9 +161,11 @@ async function deliver(app: App, row: SessionRow, events: BetaManagedAgentsSessi
   for (const ev of events) {
     switch (ev.type) {
       case "agent.message": {
+        // Ответ с источниками приходит одним событием из нескольких текстовых блоков,
+        // разрезанных посреди фразы, — склеиваем их как есть, без разделителя.
         const t = ev.content
           .map((b) => (b.type === "text" ? b.text : ""))
-          .join("\n\n")
+          .join("")
           .trim();
         if (t) texts.push(t);
         break;

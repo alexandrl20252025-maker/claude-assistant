@@ -89,6 +89,26 @@ test("ход не закончен — ничего не шлём; законч�
   assert.equal(tg.sent().at(-1)!.body.text, "часть 1\n\nчасть 2");
 });
 
+test("ответ из нескольких блоков (вокруг источников) склеивается без разрывов", async () => {
+  const { app, anthropic } = await paired();
+  await handleUpdate(app, text("новости?"));
+  const sid = [...anthropic.sessions.keys()][0];
+  anthropic.push(sid, {
+    type: "agent.message",
+    content: [
+      { type: "text", text: "С 25.10 СФР передаёт данные в МВД. Об этом пишет ГАРАНТ.РУ: " },
+      { type: "text", text: "передача идёт через СМЭВ" },
+      { type: "text", text: ". [ГАРАНТ.РУ](https://www.garant.ru/news/1/)" },
+    ],
+  });
+  anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  await processSession(app, sid);
+  assert.equal(
+    tg.sent().at(-1)!.body.text,
+    'С 25.10 СФР передаёт данные в МВД. Об этом пишет ГАРАНТ.РУ: передача идёт через СМЭВ. <a href="https://www.garant.ru/news/1/">ГАРАНТ.РУ</a>',
+  );
+});
+
 test("запрос разрешения: кнопки -> нажатие -> user.tool_confirmation", async () => {
   const { app, anthropic } = await paired();
   await handleUpdate(app, text("удали временные файлы"));
