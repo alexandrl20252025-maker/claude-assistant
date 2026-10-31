@@ -4,5 +4,8 @@
   "chat_agent_id": "agent_01KQt7E1ZNqFsVgN8meQHGAu",
   "scheduled_agent_id": "agent_01T4vySc647ffcG2Sf3Criyb",
   "digest_deployment_id": "depl_013rTaGUgSDQvCg7Xv8mLU8r",
-  "monitor_deployment_id": "depl_01NVw8mHMjB3HGvrCNz6Ujt8"
+  "monitor_deployment_id": "depl_01NVw8mHMjB3HGvrCNz6Ujt8",
+  "d1_database_id": "6e14473a-704a-4f25-959b-a6eaeda94a33",
+  "worker_url": "https://claude-assistant-bot.assistant-2e0916.workers.dev",
+  "bot_username": "urist0007_bot"
 }
