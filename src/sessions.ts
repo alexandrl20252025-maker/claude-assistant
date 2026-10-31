@@ -91,18 +91,25 @@ async function sessionRow(app: App, sessionId: string): Promise<SessionRow | nul
   if (known) return known;
   const s = await app.anthropic.beta.sessions.retrieve(sessionId);
   if (!s.agent?.id || !agentIds(app.env).includes(s.agent.id)) return null;
+  // Пересылаем только свои сессии: разговоры из Telegram и запуски по расписанию.
+  // Пробные и созданные вручную в Console сессии того же агента — не трогаем.
+  const kind = s.metadata?.kind;
+  const isChat = kind === "chat";
+  const isScheduled = !!s.deployment_id || kind === "digest" || kind === "monitor";
+  if (!isChat && !isScheduled) return null;
   const chatId = Number(s.metadata?.chat_id) || (await app.db.ownerId());
   if (!chatId) return null;
-  await app.db.addSession(sessionId, chatId, s.metadata?.kind === "chat" ? "chat" : "scheduled");
+  await app.db.addSession(sessionId, chatId, isChat ? "chat" : "scheduled");
   return app.db.getSession(sessionId);
 }
 
-export async function processSession(app: App, sessionId: string): Promise<void> {
-  if (!(await sessionRow(app, sessionId))) return;
+/** Пересылает новое из сессии в Telegram. true — если ход агента закончен и всё отправлено. */
+export async function processSession(app: App, sessionId: string): Promise<boolean> {
+  if (!(await sessionRow(app, sessionId))) return false;
 
   let locked = false;
   for (let i = 0; i < 8 && !(locked = await app.db.lockSession(sessionId)); i++) await sleep(2500);
-  if (!locked) return;
+  if (!locked) return false;
 
   try {
     const row = (await app.db.getSession(sessionId))!;
@@ -116,15 +123,16 @@ export async function processSession(app: App, sessionId: string): Promise<void>
     })) {
       if (!seen.has(ev.id)) events.push(ev);
     }
-    if (!events.length) return;
+    if (!events.length) return false;
 
     const delivered = await deliver(app, row, events);
-    if (!delivered) return; // ход агента ещё не закончен — дождёмся следующего idle
+    if (!delivered) return false; // ход агента ещё не закончен — дождёмся следующего idle
 
     let ts = row.cursor_ts ?? "";
     for (const e of events) if (e.processed_at && e.processed_at > ts) ts = e.processed_at;
     const ids = [...(ts === row.cursor_ts ? seen : []), ...events.filter((e) => e.processed_at === ts).map((e) => e.id)];
     await app.db.saveCursor(sessionId, ts, ids);
+    return true;
   } finally {
     await app.db.unlockSession(sessionId);
   }
@@ -161,9 +169,11 @@ async function deliver(app: App, row: SessionRow, events: BetaManagedAgentsSessi
   for (const ev of events) {
     switch (ev.type) {
       case "agent.message": {
+        // Ответ с источниками приходит одним событием из нескольких текстовых блоков,
+        // разрезанных посреди фразы, — склеиваем их как есть, без разделителя.
         const t = ev.content
           .map((b) => (b.type === "text" ? b.text : ""))
-          .join("\n\n")
+          .join("")
           .trim();
         if (t) texts.push(t);
         break;
@@ -266,6 +276,20 @@ async function sendNewFiles(app: App, sessionId: string, chatId: number, expectN
       }
     }
     if (sent) return;
+  }
+}
+
+/**
+ * Быстрый путь без вебхука: после сообщения пользователя несколько секунд следим
+ * за сессией и сразу пересылаем короткий ответ. Длинные ответы заберёт вебхук или
+ * ежеминутный резервный проход.
+ */
+export async function waitAndDeliver(app: App, sessionId: string, totalMs: number, stepMs = 3000) {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    await sleep(stepMs);
+    const s = await app.anthropic.beta.sessions.retrieve(sessionId);
+    if ((s.status === "idle" || s.status === "terminated") && (await processSession(app, sessionId))) return;
   }
 }
 

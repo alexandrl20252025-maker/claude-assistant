@@ -50,7 +50,7 @@ export async function handleFetch(req: Request, app: App, ctx: { waitUntil(p: Pr
     if (!(await app.db.firstSeen(event.id))) return new Response(null, { status: 204 });
 
     const type: string = event.data.type;
-    if (type === "session.status_idled" || type === "session.status_terminated") {
+    if (type === "session.status_idled" || type === "session.status_terminated" || type === "session.budget_reached") {
       ctx.waitUntil(processSession(app, event.data.id).catch((e) => reportError(app, e, "session")));
     } else if (type === "deployment_run.failed") {
       ctx.waitUntil(onDeploymentRunFailed(app, event.data.id).catch((e) => reportError(app, e, "deployment")));
@@ -64,14 +64,14 @@ export async function handleFetch(req: Request, app: App, ctx: { waitUntil(p: Pr
 
 export async function handleScheduled(app: App, scheduledTime: number) {
   await sweep(app).catch((e) => console.error("sweep", e));
-  if (new Date(scheduledTime).getUTCMinutes() < 2) await app.db.prune().catch(() => undefined);
+  if (new Date(scheduledTime).getUTCMinutes() === 0) await app.db.prune().catch(() => undefined);
 }
 
 export default {
   fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleFetch(req, makeApp(env), ctx);
   },
-  // Каждые 2 минуты: подстраховка на случай потерянного вебхука + чистка
+  // Каждую минуту: подстраховка на случай потерянного вебхука + чистка
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(handleScheduled(makeApp(env), controller.scheduledTime));
   },

@@ -1,6 +1,7 @@
 // Разворачивает посредника в Cloudflare Workers и подключает к нему Telegram-бота.
 // Запускать после `npm run setup`. Нужны переменные окружения:
-//   ASSISTANT_API_KEY, TELEGRAM_BOT_TOKEN, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+//   ASSISTANT_API_KEY, TELEGRAM_BOT_TOKEN, CLOUDFLARE_API_TOKEN
+// и необязательно CLOUDFLARE_ACCOUNT_ID (если аккаунт один — найдётся сам по токену)
 
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -13,7 +14,7 @@ const STATE_FILE = path.join(ROOT, "state.json");
 const WORKER_NAME = "claude-assistant-bot";
 const DB_NAME = "claude-assistant-db";
 
-const need = ["ASSISTANT_API_KEY", "TELEGRAM_BOT_TOKEN", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"];
+const need = ["ASSISTANT_API_KEY", "TELEGRAM_BOT_TOKEN", "CLOUDFLARE_API_TOKEN"];
 const missing = need.filter((k) => !process.env[k]);
 if (missing.length) {
   console.error(`Не хватает переменных окружения: ${missing.join(", ")}`);
@@ -30,15 +31,29 @@ for (const k of ["environment_id", "memory_store_id", "chat_agent_id", "schedule
 }
 const save = () => fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + "\n");
 
-async function cf<T>(method: string, p: string, body?: unknown): Promise<T> {
-  const res = await fetch(`https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}${p}`, {
+async function cfRaw<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
     method,
     headers: { authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = (await res.json()) as { success: boolean; result: T; errors?: { code: number; message: string }[] };
-  if (!json.success) throw Object.assign(new Error(`Cloudflare ${p}: ${json.errors?.map((e) => e.message).join("; ")}`), { codes: json.errors?.map((e) => e.code) });
+  if (!json.success) throw Object.assign(new Error(`Cloudflare ${url.replace(/^.*\/v4/, "")}: ${json.errors?.map((e) => e.message).join("; ")}`), { codes: json.errors?.map((e) => e.code) });
   return json.result;
+}
+
+const cf = <T>(method: string, p: string, body?: unknown) =>
+  cfRaw<T>(method, `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}${p}`, body);
+
+async function resolveAccountId() {
+  if (env.CLOUDFLARE_ACCOUNT_ID) return;
+  const accounts = await cfRaw<{ id: string; name: string }[]>("GET", "https://api.cloudflare.com/client/v4/accounts");
+  if (accounts.length !== 1) {
+    throw new Error(`Токену доступно аккаунтов Cloudflare: ${accounts.length}. Укажите нужный в CLOUDFLARE_ACCOUNT_ID.`);
+  }
+  env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id;
+  process.env.CLOUDFLARE_ACCOUNT_ID = accounts[0].id; // для wrangler
+  console.log(`✓ аккаунт Cloudflare: ${accounts[0].name}`);
 }
 
 async function tg<T>(method: string, body: unknown): Promise<T> {
@@ -103,6 +118,7 @@ function writeWranglerToml(d1Id: string) {
 }
 
 async function main() {
+  await resolveAccountId();
   const me = await tg<{ username: string }>("getMe", {});
   console.log(`✓ бот найден: @${me.username}`);
 
@@ -164,9 +180,9 @@ async function main() {
      /start ${pairCode}
 
 2) Чтобы ответы приходили сразу, зарегистрируйте вебхук в Claude Console:
-     Manage → Webhooks → Add endpoint
+     https://platform.claude.com/settings/workspaces/default/webhooks → Add endpoint
      URL:     ${url}/anthropic
-     События: session.status_idled, session.status_terminated, deployment_run.failed
+     События: session.status_idled, session.status_terminated, session.budget_reached, deployment_run.failed
    Потом отправьте боту:  /key whsec_…  (ключ подписи, который покажет Console)
    Без вебхука бот тоже работает, но ответ приходит с задержкой до 2 минут.
 `);

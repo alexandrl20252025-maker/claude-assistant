@@ -1,7 +1,7 @@
 import { toFile } from "@anthropic-ai/sdk";
 import { App, consoleUrl, formatCents } from "./app";
 import { escapeHtml } from "./format";
-import { createChatSession, ensureChatSession, sendUserMessage, UserFacingError } from "./sessions";
+import { createChatSession, ensureChatSession, sendUserMessage, UserFacingError, waitAndDeliver } from "./sessions";
 import type { TgCallbackQuery, TgMessage, TgUpdate } from "./telegram";
 
 const HELP = `Я ваш ассистент на Claude. Просто пишите — отвечу, поищу в интернете, разберу документ.
@@ -182,12 +182,18 @@ async function forwardToAgent(app: App, msg: TgMessage, text: string) {
   const placeholder = routed ? null : await tg.sendMessage(chatId, "⏳ Думаю…").catch(() => null);
   if (routed) await tg.typing(chatId);
   try {
-    await sendUserMessage(app, sessionId, chatId, prompt, !routed);
+    sessionId = await sendUserMessage(app, sessionId, chatId, prompt, !routed);
   } catch (err) {
     if (placeholder) await tg.deleteMessage(chatId, placeholder.message_id);
     throw err;
   }
   if (!routed) await db.touchChat(chatId, placeholder?.message_id ?? null);
+
+  // Пока вебхук Anthropic не подключён (/key), короткие ответы забираем сами
+  const quickMs = Number(app.env.QUICK_POLL_SECONDS ?? "25") * 1000;
+  if (quickMs > 0 && !(await db.getSetting("webhook_key")) && !app.env.ANTHROPIC_WEBHOOK_SIGNING_KEY) {
+    await waitAndDeliver(app, sessionId, quickMs);
+  }
 }
 
 async function handleCallback(app: App, cq: TgCallbackQuery) {

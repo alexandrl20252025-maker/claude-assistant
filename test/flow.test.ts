@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { afterEach, beforeEach, test } from "node:test";
 import { handleUpdate } from "../src/bot";
 import { handleFetch, handleScheduled } from "../src/index";
-import { processSession } from "../src/sessions";
+import { processSession, waitAndDeliver } from "../src/sessions";
 import type { TgUpdate } from "../src/telegram";
 import { installFakeTelegram, makeTestApp } from "./fakes";
 
@@ -87,6 +87,26 @@ test("ход не закончен — ничего не шлём; законч�
   anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
   await processSession(app, sid);
   assert.equal(tg.sent().at(-1)!.body.text, "часть 1\n\nчасть 2");
+});
+
+test("ответ из нескольких блоков (вокруг источников) склеивается без разрывов", async () => {
+  const { app, anthropic } = await paired();
+  await handleUpdate(app, text("новости?"));
+  const sid = [...anthropic.sessions.keys()][0];
+  anthropic.push(sid, {
+    type: "agent.message",
+    content: [
+      { type: "text", text: "С 25.10 СФР передаёт данные в МВД. Об этом пишет ГАРАНТ.РУ: " },
+      { type: "text", text: "передача идёт через СМЭВ" },
+      { type: "text", text: ". [ГАРАНТ.РУ](https://www.garant.ru/news/1/)" },
+    ],
+  });
+  anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  await processSession(app, sid);
+  assert.equal(
+    tg.sent().at(-1)!.body.text,
+    'С 25.10 СФР передаёт данные в МВД. Об этом пишет ГАРАНТ.РУ: передача идёт через СМЭВ. <a href="https://www.garant.ru/news/1/">ГАРАНТ.РУ</a>',
+  );
 });
 
 test("запрос разрешения: кнопки -> нажатие -> user.tool_confirmation", async () => {
@@ -285,4 +305,31 @@ test("резервный опрос по расписанию Worker наход�
   anthropic.push("sesn_lost", { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
   await handleScheduled(app, Date.now());
   assert.equal(tg.sent().at(-1)!.body.text, "потерянный дайджест");
+});
+
+test("пробные и ручные сессии того же агента не пересылаются", async () => {
+  const { app, anthropic } = await paired();
+  anthropic.addSession("sesn_smoke", "agent_chat", { kind: "smoke" });
+  anthropic.push("sesn_smoke", { type: "agent.message", content: [{ type: "text", text: "пробный ответ" }] });
+  anthropic.push("sesn_smoke", { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  anthropic.addSession("sesn_console", "agent_sched", {});
+  anthropic.push("sesn_console", { type: "agent.message", content: [{ type: "text", text: "из Console" }] });
+  anthropic.push("sesn_console", { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  await handleScheduled(app, Date.now());
+  assert.equal(tg.sent().length, 0);
+});
+
+test("быстрый путь: короткий ответ забирается сразу, не дожидаясь резервного прохода", async () => {
+  const { app, anthropic } = await paired();
+  await handleUpdate(app, text("быстрый вопрос"));
+  const sid = [...anthropic.sessions.keys()][0];
+  // ответ появляется чуть позже, чем начинается ожидание
+  setTimeout(() => {
+    anthropic.push(sid, { type: "agent.message", content: [{ type: "text", text: "быстрый ответ" }] });
+    anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  }, 60);
+  const t0 = Date.now();
+  await waitAndDeliver(app, sid, 2000, 20);
+  assert.ok(Date.now() - t0 < 1000, "вернулся сразу после доставки");
+  assert.equal(tg.sent().at(-1)!.body.text, "быстрый ответ");
 });
