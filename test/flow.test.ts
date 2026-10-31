@@ -345,7 +345,7 @@ async function invite(app: Parameters<typeof handleUpdate>[0], role: "self" | "f
   assert.ok(kb, "кнопки выбора");
   await handleUpdate(app, { update_id: upd++, callback_query: { id: "cqi", from: { id: OWNER }, data: `inv:${role}`, message: { message_id: 1, chat: { id: OWNER, type: "private" }, date: 0 } } });
   const edited = tg.calls.filter((c) => c.method === "editMessageText").at(-1)!;
-  const code = String(edited.body.text).match(/\/start ([A-Z0-9]+)/)![1];
+  const code = String(edited.body.text).match(/\?start=([A-Z0-9]+)/)![1];
   return code;
 }
 
@@ -422,7 +422,7 @@ test("/users и /remove: отключённый больше не может п�
   await handleUpdate(app, text("/remove 777"));
   assert.match(String(tg.sent().at(-1)!.body.text), /Отключил/);
   await handleUpdate(app, text("привет", {}, WIFE));
-  assert.equal(tg.sent().at(-1)!.body.text, "Это частный бот.");
+  assert.match(String(tg.sent().at(-1)!.body.text), /^Это частный бот\./);
 });
 
 test("просроченный код не подходит", async () => {
@@ -430,4 +430,16 @@ test("просроченный код не подходит", async () => {
   await app.db.createInvite("OLDCODE1", "self", -1000);
   await handleUpdate(app, text("/start OLDCODE1", {}, ALT));
   assert.match(String(tg.sent().at(-1)!.body.text), /не подошёл/);
+});
+
+test("код принимается в любом виде: после голого /start, отдельным сообщением, маленькими буквами", async () => {
+  const { app } = await paired();
+  const code = await invite(app, "self");
+  const edited = String(tg.calls.filter((c) => c.method === "editMessageText").at(-1)!.body.text);
+  assert.match(edited, new RegExp(`https://t\\.me/test_bot\\?start=${code}`), "в приглашении есть ссылка");
+
+  await handleUpdate(app, text("/start", {}, ALT));
+  assert.match(String(tg.sent().at(-1)!.body.text), /пришлите код приглашения/);
+  await handleUpdate(app, text(`мой код: ${code.toLowerCase()}`, {}, ALT));
+  assert.equal((await app.db.getUser(ALT))?.role, "self");
 });

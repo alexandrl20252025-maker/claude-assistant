@@ -78,11 +78,14 @@ export async function handleUpdate(app: App, update: TgUpdate) {
       }
       return;
     }
-    if (code) {
-      await acceptInvite(app, msg, code, owner);
+    // Код приглашения принимаем в любом виде: «/start КОД», просто «КОД», маленькими буквами
+    const candidates = [...new Set([...text.toUpperCase().matchAll(/[A-Z0-9]{6,12}/g)].map((m) => m[0]))].slice(0, 3);
+    if (candidates.length) {
+      for (const c of candidates) if (await acceptInvite(app, msg, c, owner)) return;
+      await tg.sendMessage(chatId, "Код не подошёл: он неверный, уже использован или устарел. Попросите новый.");
       return;
     }
-    await tg.sendMessage(chatId, "Это частный бот.");
+    await tg.sendMessage(chatId, "Это частный бот. Если вас пригласили — пришлите код приглашения.");
     return;
   }
 
@@ -99,14 +102,12 @@ export async function handleUpdate(app: App, update: TgUpdate) {
   }
 }
 
-async function acceptInvite(app: App, msg: TgMessage, code: string, owner: number) {
+/** true — если код подошёл и пользователь подключён. */
+async function acceptInvite(app: App, msg: TgMessage, code: string, owner: number): Promise<boolean> {
   const { tg, db, anthropic } = app;
   const from = msg.from!;
   const role = await db.takeInvite(code, from.id);
-  if (!role) {
-    await tg.sendMessage(msg.chat.id, "Код не подошёл: он неверный, уже использован или устарел. Попросите новый.");
-    return;
-  }
+  if (!role) return false;
   const name = displayName(from);
   let memoryStoreId: string | null = null;
   if (role === "family") {
@@ -121,6 +122,7 @@ async function acceptInvite(app: App, msg: TgMessage, code: string, owner: numbe
   await db.addUser(from.id, role, name, memoryStoreId);
   await tg.sendMessage(msg.chat.id, `✅ Готово, вы подключены.\n\n${helpFor(role)}`, { parse_mode: "HTML" });
   await tg.sendMessage(owner, `✅ Подключён: ${name} (${ROLE_NAMES[role]}).`);
+  return true;
 }
 
 function randomCode() {
@@ -303,8 +305,10 @@ async function handleInviteCallback(app: App, cq: TgCallbackQuery, role: Role) {
   const me = await tg.call<{ username: string }>("getMe", {});
   const who = role === "family" ? "члена семьи" : "вашего другого аккаунта";
   const text =
-    `Код для ${who} — одноразовый, действует 24 часа.\n\n` +
-    `С нужного аккаунта откройте @${me.username} и отправьте:\n<code>/start ${code}</code>` +
+    `Приглашение для ${who} — одноразовое, действует 24 часа.\n\n` +
+    `Перешлите эту ссылку на нужный аккаунт и откройте её там, затем нажмите «Запустить»:\n` +
+    `https://t.me/${me.username}?start=${code}\n\n` +
+    `Или откройте @${me.username} с нужного аккаунта и отправьте код: <code>${code}</code>` +
     (role === "family" ? "\n\nУ члена семьи будет свой помощник и своя память — ваших заметок он не увидит." : "");
   if (cq.message) await tg.editText(cq.message.chat.id, cq.message.message_id, text).catch(() => tg.sendMessage(cq.from.id, text, { parse_mode: "HTML" }));
   else await tg.sendMessage(cq.from.id, text, { parse_mode: "HTML" });
