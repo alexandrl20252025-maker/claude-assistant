@@ -23,7 +23,7 @@ if (missing.length) {
 const env = process.env as Record<string, string>;
 const state: State = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
-for (const k of ["environment_id", "memory_store_id", "chat_agent_id", "scheduled_agent_id", "digest_deployment_id", "monitor_deployment_id"] as const) {
+for (const k of ["environment_id", "memory_store_id", "chat_agent_id", "scheduled_agent_id", "family_agent_id", "digest_deployment_id", "monitor_deployment_id"] as const) {
   if (!state[k]) {
     console.error(`В state.json нет ${k} — сначала запустите npm run setup.`);
     process.exit(1);
@@ -105,6 +105,7 @@ function writeWranglerToml(d1Id: string) {
     __D1_ID__: d1Id,
     __AGENT_ID__: state.chat_agent_id!,
     __SCHEDULED_AGENT_ID__: state.scheduled_agent_id!,
+    __FAMILY_AGENT_ID__: state.family_agent_id!,
     __ENVIRONMENT_ID__: state.environment_id!,
     __MEMORY_STORE_ID__: state.memory_store_id!,
     __DIGEST_DEPLOYMENT_ID__: state.digest_deployment_id!,

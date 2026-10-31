@@ -15,6 +15,16 @@ export interface SessionRow {
   created_at: number;
 }
 
+export type Role = "owner" | "self" | "family";
+
+export interface UserRow {
+  tg_id: number;
+  role: Role;
+  name: string | null;
+  memory_store_id: string | null;
+  added_at: number;
+}
+
 export interface ConfirmationRow {
   id: number;
   session_id: string;
@@ -44,6 +54,53 @@ export class Db {
   async ownerId(): Promise<number | null> {
     const v = await this.getSetting("owner_id");
     return v ? Number(v) : null;
+  }
+
+  /** Пользователь бота; владелец из старой схемы (settings.owner_id) переносится сам. */
+  async getUser(tgId: number): Promise<UserRow | null> {
+    const row = await this.d1.prepare("SELECT * FROM users WHERE tg_id = ?").bind(tgId).first<UserRow>();
+    if (row) return row;
+    if ((await this.ownerId()) === tgId) {
+      await this.addUser(tgId, "owner", null, null);
+      return this.d1.prepare("SELECT * FROM users WHERE tg_id = ?").bind(tgId).first<UserRow>();
+    }
+    return null;
+  }
+
+  async addUser(tgId: number, role: Role, name: string | null, memoryStoreId: string | null) {
+    await this.d1
+      .prepare("INSERT OR REPLACE INTO users (tg_id, role, name, memory_store_id, added_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(tgId, role, name, memoryStoreId, now())
+      .run();
+  }
+
+  async listUsers(): Promise<UserRow[]> {
+    return (await this.d1.prepare("SELECT * FROM users ORDER BY added_at").all<UserRow>()).results;
+  }
+
+  async removeUser(tgId: number): Promise<boolean> {
+    const res = await this.d1.prepare("DELETE FROM users WHERE tg_id = ? AND role != 'owner'").bind(tgId).run();
+    await this.d1.prepare("UPDATE chats SET session_id = NULL WHERE chat_id = ?").bind(tgId).run();
+    return (res.meta.changes ?? 0) > 0;
+  }
+
+  async createInvite(code: string, role: Role, ttlMs: number) {
+    await this.d1.prepare("INSERT INTO invites (code, role, expires_at) VALUES (?, ?, ?)").bind(code, role, now() + ttlMs).run();
+  }
+
+  /** Погашает код приглашения; возвращает роль или null, если код неверный, просрочен или уже использован. */
+  async takeInvite(code: string, tgId: number): Promise<Role | null> {
+    const res = await this.d1
+      .prepare("UPDATE invites SET used_by = ? WHERE code = ? AND used_by IS NULL AND expires_at > ?")
+      .bind(tgId, code, now())
+      .run();
+    if (!(res.meta.changes ?? 0)) return null;
+    const row = await this.d1.prepare("SELECT role FROM invites WHERE code = ?").bind(code).first<{ role: Role }>();
+    return row?.role ?? null;
+  }
+
+  getConfirmation(id: number) {
+    return this.d1.prepare("SELECT * FROM confirmations WHERE id = ?").bind(id).first<ConfirmationRow>();
   }
 
   getChat(chatId: number) {
@@ -189,6 +246,7 @@ export class Db {
     await this.d1.batch([
       this.d1.prepare("DELETE FROM seen_webhooks WHERE at < ?").bind(weekAgo),
       this.d1.prepare("DELETE FROM routes WHERE at < ?").bind(monthAgo),
+      this.d1.prepare("DELETE FROM invites WHERE expires_at < ?").bind(weekAgo),
     ]);
   }
 }

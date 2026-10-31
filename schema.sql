@@ -55,3 +55,21 @@ CREATE TABLE IF NOT EXISTS sent_files (
   file_id    TEXT PRIMARY KEY,
   session_id TEXT NOT NULL
 );
+
+-- Кто может писать боту. owner — владелец; self — другие аккаунты владельца
+-- (общая память и юридический профиль); family — член семьи (свой агент и своя память).
+CREATE TABLE IF NOT EXISTS users (
+  tg_id           INTEGER PRIMARY KEY,
+  role            TEXT NOT NULL,
+  name            TEXT,
+  memory_store_id TEXT,
+  added_at        INTEGER NOT NULL
+);
+
+-- Одноразовые коды приглашений (/invite)
+CREATE TABLE IF NOT EXISTS invites (
+  code       TEXT PRIMARY KEY,
+  role       TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_by    INTEGER
+);

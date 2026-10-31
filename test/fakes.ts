@@ -57,6 +57,7 @@ export function installFakeTelegram() {
     } else if (typeof init?.body === "string") body = JSON.parse(init.body);
     calls.push({ method: m[1], body });
     const method = m[1];
+    if (method === "getMe") return Response.json({ ok: true, result: { id: 1, is_bot: true, username: "test_bot" } });
     if (method === "getFile") return Response.json({ ok: true, result: { file_path: "documents/file_7.pdf", file_size: 10 } });
     if (method === "sendMessage" || method === "sendDocument") {
       // HTML с ошибкой разметки: проверяем откат на простой текст
@@ -100,6 +101,7 @@ export class FakeAnthropic {
   outputFiles: { id: string; filename: string; size_bytes: number; scope: string }[] = [];
   resourcesAdded: { sessionId: string; params: Record<string, unknown> }[] = [];
   runs: string[] = [];
+  memoryStores: { id: string; name: string; memories: { path: string; content: string }[] }[] = [];
   sendFailures: Error[] = [];
   private n = 0;
   private realWebhooks = new Anthropic({ apiKey: "test" }).beta.webhooks;
@@ -171,6 +173,19 @@ export class FakeAnthropic {
       list: (p: { scope_id: string }) => iter(this.outputFiles.filter((f) => f.scope === p.scope_id)),
     },
     deployments: { run: async (id: string) => (this.runs.push(id), { id: "drun_1" }) },
+    memoryStores: {
+      create: async (p: { name: string }) => {
+        const store = { id: `memstore_f${++this.n}`, name: p.name, memories: [] as { path: string; content: string }[] };
+        this.memoryStores.push(store);
+        return store;
+      },
+      memories: {
+        create: async (storeId: string, p: { path: string; content: string }) => {
+          this.memoryStores.find((m) => m.id === storeId)!.memories.push(p);
+          return { id: `mem_${++this.n}`, ...p };
+        },
+      },
+    },
     deploymentRuns: { retrieve: async () => ({ error: { type: "agent_archived_error", message: "агент в архиве" } }) },
     webhooks: this.realWebhooks,
   };
@@ -188,6 +203,7 @@ export const ENV: Omit<Env, "DB"> = {
   PAIR_CODE: "424242",
   AGENT_ID: "agent_chat",
   SCHEDULED_AGENT_ID: "agent_sched",
+  FAMILY_AGENT_ID: "agent_family",
   ENVIRONMENT_ID: "env_1",
   MEMORY_STORE_ID: "memstore_1",
   DIGEST_DEPLOYMENT_ID: "depl_digest",

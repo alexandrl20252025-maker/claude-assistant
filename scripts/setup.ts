@@ -28,6 +28,7 @@ export interface State {
   memory_store_id?: string;
   chat_agent_id?: string;
   scheduled_agent_id?: string;
+  family_agent_id?: string;
   digest_deployment_id?: string;
   monitor_deployment_id?: string;
   d1_database_id?: string;
@@ -113,12 +114,12 @@ async function upsertMemory() {
   }
 }
 
-function agentBody(name: string, model: string, effort: string) {
+function agentBody(name: string, model: string, effort: string, promptFile: string, description: string) {
   return {
     name,
-    description: "Личный ассистент юриста в Telegram: ответы с источниками, файлы, дайджест, мониторинг.",
+    description,
     model: { id: model, effort: effort as "low" | "medium" | "high" | "xhigh" | "max" },
-    system: read("agent/system-prompt.md"),
+    system: read(promptFile),
     tools: [
       {
         type: "agent_toolset_20260401" as const,
@@ -132,8 +133,18 @@ function agentBody(name: string, model: string, effort: string) {
   };
 }
 
-async function upsertAgent(key: "chat_agent_id" | "scheduled_agent_id", name: string, model: string, effort: string) {
-  const body = agentBody(name, model, effort);
+const LAWYER = "Личный ассистент юриста в Telegram: ответы с источниками, файлы, дайджест, мониторинг.";
+const FAMILY = "Личный помощник для членов семьи в Telegram: ответы, поиск, файлы, своя память.";
+
+async function upsertAgent(
+  key: "chat_agent_id" | "scheduled_agent_id" | "family_agent_id",
+  name: string,
+  model: string,
+  effort: string,
+  promptFile = "agent/system-prompt.md",
+  description = LAWYER,
+) {
+  const body = agentBody(name, model, effort, promptFile, description);
   const existing = state[key];
   if (existing) {
     const a = await client.beta.agents.update(existing, body);
@@ -181,6 +192,7 @@ async function main() {
   await upsertMemory();
   await upsertAgent("chat_agent_id", "Ассистент — чат", cfg.chat.model, cfg.chat.effort);
   await upsertAgent("scheduled_agent_id", "Ассистент — расписание", cfg.scheduled.model, cfg.scheduled.effort);
+  await upsertAgent("family_agent_id", "Ассистент — семья", cfg.chat.model, cfg.chat.effort, "agent/family-system-prompt.md", FAMILY);
   await upsertDeployment("digest_deployment_id", "Утренний дайджест", cfg.digest.cron, "agent/kickoff-digest.md", cfg.digest.budget_usd, "digest");
   await upsertDeployment("monitor_deployment_id", "Мониторинг", cfg.monitor.cron, "agent/kickoff-monitor.md", cfg.monitor.budget_usd, "monitor");
   save();

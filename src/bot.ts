@@ -1,5 +1,7 @@
 import { toFile } from "@anthropic-ai/sdk";
 import { App, consoleUrl, formatCents } from "./app";
+import { FAMILY_MEMORY_STORE_NAME, familyProfile } from "./constants";
+import type { Role, UserRow } from "./db";
 import { escapeHtml } from "./format";
 import { createChatSession, ensureChatSession, sendUserMessage, UserFacingError, waitAndDeliver } from "./sessions";
 import type { TgCallbackQuery, TgMessage, TgUpdate } from "./telegram";
@@ -27,6 +29,33 @@ const HELP = `Я ваш ассистент на Claude. Просто пишит�
 
 Ответ на сообщение дайджеста или мониторинга (reply) продолжает именно ту задачу.`;
 
+const OWNER_HELP = `
+
+<b>Доступ</b>
+/invite — подключить ваш другой аккаунт или члена семьи
+/users — кто подключён
+/remove &lt;id&gt; — отключить`;
+
+const FAMILY_HELP = `Я ваш личный помощник на Claude. Просто пишите — отвечу, поищу в интернете, разберу документ или фото, подготовлю файл. Важное запоминаю между разговорами.
+
+<b>Команды</b>
+/new — начать новый разговор (память сохранится)
+/stop — остановить текущий ответ
+/status — расход текущего разговора
+/help — эта справка`;
+
+function helpFor(role: Role) {
+  if (role === "family") return FAMILY_HELP;
+  return role === "owner" ? HELP + OWNER_HELP : HELP;
+}
+
+const ROLE_NAMES: Record<Role, string> = { owner: "владелец", self: "ваш аккаунт", family: "семья" };
+const INVITE_TTL_MS = 24 * 3600_000;
+
+function displayName(from: { first_name?: string; username?: string; id: number }) {
+  return [from.first_name, from.username ? `@${from.username}` : null].filter(Boolean).join(" ") || String(from.id);
+}
+
 export async function handleUpdate(app: App, update: TgUpdate) {
   if (update.callback_query) return handleCallback(app, update.callback_query);
   const msg = update.message;
@@ -35,24 +64,31 @@ export async function handleUpdate(app: App, update: TgUpdate) {
   const chatId = msg.chat.id;
   const text = (msg.text || msg.caption || "").trim();
 
-  const owner = await db.ownerId();
-  if (!owner) {
-    if (env.PAIR_CODE && text === `/start ${env.PAIR_CODE}`) {
-      await db.setSetting("owner_id", String(msg.from.id));
-      await tg.sendMessage(chatId, `✅ Бот привязан к вам.\n\n${HELP}`, { parse_mode: "HTML" });
-    } else if (text.startsWith("/start")) {
-      await tg.sendMessage(chatId, "Это частный бот. Чтобы привязать его к себе, отправьте /start и код из инструкции.");
+  const user = await db.getUser(msg.from.id);
+  if (!user) {
+    const owner = await db.ownerId();
+    const code = text.match(/^\/start\s+(\S+)$/)?.[1];
+    if (!owner) {
+      if (env.PAIR_CODE && code === env.PAIR_CODE) {
+        await db.setSetting("owner_id", String(msg.from.id));
+        await db.addUser(msg.from.id, "owner", displayName(msg.from), null);
+        await tg.sendMessage(chatId, `✅ Бот привязан к вам.\n\n${helpFor("owner")}`, { parse_mode: "HTML" });
+      } else if (text.startsWith("/start")) {
+        await tg.sendMessage(chatId, "Это частный бот. Чтобы привязать его к себе, отправьте /start и код из инструкции.");
+      }
+      return;
     }
-    return;
-  }
-  if (msg.from.id !== owner) {
+    if (code) {
+      await acceptInvite(app, msg, code, owner);
+      return;
+    }
     await tg.sendMessage(chatId, "Это частный бот.");
     return;
   }
 
   try {
     const cmd = !msg.document && !msg.photo ? text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/) : null;
-    if (cmd && (await handleCommand(app, msg, cmd[1].toLowerCase(), (cmd[2] ?? "").trim()))) return;
+    if (cmd && (await handleCommand(app, msg, user, cmd[1].toLowerCase(), (cmd[2] ?? "").trim()))) return;
     await forwardToAgent(app, msg, text);
   } catch (err) {
     if (err instanceof UserFacingError) {
@@ -63,14 +99,77 @@ export async function handleUpdate(app: App, update: TgUpdate) {
   }
 }
 
-async function handleCommand(app: App, msg: TgMessage, cmd: string, arg: string): Promise<boolean> {
+async function acceptInvite(app: App, msg: TgMessage, code: string, owner: number) {
+  const { tg, db, anthropic } = app;
+  const from = msg.from!;
+  const role = await db.takeInvite(code, from.id);
+  if (!role) {
+    await tg.sendMessage(msg.chat.id, "Код не подошёл: он неверный, уже использован или устарел. Попросите новый.");
+    return;
+  }
+  const name = displayName(from);
+  let memoryStoreId: string | null = null;
+  if (role === "family") {
+    // У члена семьи — своя память, отдельная от памяти владельца
+    const store = await anthropic.beta.memoryStores.create({
+      name: FAMILY_MEMORY_STORE_NAME,
+      description: `Личная память помощника для ${name}: профиль, предпочтения, заметки.`,
+    });
+    await anthropic.beta.memoryStores.memories.create(store.id, { path: "/profile.md", content: familyProfile(from.first_name ?? name) });
+    memoryStoreId = store.id;
+  }
+  await db.addUser(from.id, role, name, memoryStoreId);
+  await tg.sendMessage(msg.chat.id, `✅ Готово, вы подключены.\n\n${helpFor(role)}`, { parse_mode: "HTML" });
+  await tg.sendMessage(owner, `✅ Подключён: ${name} (${ROLE_NAMES[role]}).`);
+}
+
+function randomCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  return Array.from(bytes, (b) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[b % 32]).join("");
+}
+
+async function handleCommand(app: App, msg: TgMessage, user: UserRow, cmd: string, arg: string): Promise<boolean> {
   const { tg, db, env, anthropic } = app;
   const chatId = msg.chat.id;
+  const isOwner = user.role === "owner";
+  const isFamily = user.role === "family";
+  const ownerOnly = ["key", "invite", "users", "remove"];
+  const notForFamily = ["digest", "monitor"];
+  if ((ownerOnly.includes(cmd) && !isOwner) || (notForFamily.includes(cmd) && isFamily)) {
+    await tg.sendMessage(chatId, "Эта команда доступна только владельцу бота.");
+    return true;
+  }
   switch (cmd) {
     case "start":
     case "help":
-      await tg.sendMessage(chatId, HELP, { parse_mode: "HTML" });
+      await tg.sendMessage(chatId, helpFor(user.role), { parse_mode: "HTML" });
       return true;
+    case "invite":
+      await tg.sendButtons(chatId, "Кого подключаем?", [
+        [{ text: "📱 Мой другой аккаунт", callback_data: "inv:self" }],
+        [{ text: "👪 Член семьи (своя память)", callback_data: "inv:family" }],
+      ]);
+      return true;
+    case "users": {
+      const users = await db.listUsers();
+      const lines = users.map((u) => `• ${escapeHtml(u.name ?? "без имени")} — ${ROLE_NAMES[u.role]} — <code>${u.tg_id}</code>`);
+      await tg.sendMessage(chatId, `<b>Подключены</b>\n${lines.join("\n")}\n\nОтключить: /remove &lt;id&gt;`, { parse_mode: "HTML" });
+      return true;
+    }
+    case "remove": {
+      const id = Number(arg);
+      if (!id) {
+        await tg.sendMessage(chatId, "Укажите id из /users, например: /remove 123456789");
+        return true;
+      }
+      if (id === user.tg_id) {
+        await tg.sendMessage(chatId, "Себя отключить нельзя.");
+        return true;
+      }
+      const removed = await db.removeUser(id);
+      await tg.sendMessage(chatId, removed ? "Отключил. Его память и прошлые разговоры остаются в Claude Console." : "Такого пользователя нет.");
+      return true;
+    }
     case "new":
       await db.setChatSession(chatId, null);
       await tg.sendMessage(chatId, "🆕 Начинаю новый разговор. Всё важное я помню — память сохраняется.");
@@ -196,14 +295,36 @@ async function forwardToAgent(app: App, msg: TgMessage, text: string) {
   }
 }
 
+async function handleInviteCallback(app: App, cq: TgCallbackQuery, role: Role) {
+  const { tg, db } = app;
+  if (cq.from.id !== (await db.ownerId())) return tg.answerCallback(cq.id, "Только владелец может приглашать.");
+  const code = randomCode();
+  await db.createInvite(code, role, INVITE_TTL_MS);
+  const me = await tg.call<{ username: string }>("getMe", {});
+  const who = role === "family" ? "члена семьи" : "вашего другого аккаунта";
+  const text =
+    `Код для ${who} — одноразовый, действует 24 часа.\n\n` +
+    `С нужного аккаунта откройте @${me.username} и отправьте:\n<code>/start ${code}</code>` +
+    (role === "family" ? "\n\nУ члена семьи будет свой помощник и своя память — ваших заметок он не увидит." : "");
+  if (cq.message) await tg.editText(cq.message.chat.id, cq.message.message_id, text).catch(() => tg.sendMessage(cq.from.id, text, { parse_mode: "HTML" }));
+  else await tg.sendMessage(cq.from.id, text, { parse_mode: "HTML" });
+  return tg.answerCallback(cq.id);
+}
+
 async function handleCallback(app: App, cq: TgCallbackQuery) {
   const { tg, db, anthropic } = app;
+  const inv = cq.data?.match(/^inv:(self|family)$/);
+  if (inv) return handleInviteCallback(app, cq, inv[1] as Role);
   const m = cq.data?.match(/^c:([ad]):(\d+)$/);
   if (!m) return tg.answerCallback(cq.id);
-  if (cq.from.id !== (await db.ownerId())) return tg.answerCallback(cq.id, "Это частный бот.");
+
+  // Разрешать действие может тот, чей это разговор, или владелец
+  const pending = await db.getConfirmation(Number(m[2]));
+  if (!pending) return tg.answerCallback(cq.id, "Запрос не найден.");
+  if (cq.from.id !== pending.chat_id && cq.from.id !== (await db.ownerId())) return tg.answerCallback(cq.id, "Это не ваш запрос.");
 
   const result = m[1] === "a" ? "allow" : "deny";
-  const row = await db.resolveConfirmation(Number(m[2]), result);
+  const row = await db.resolveConfirmation(pending.id, result);
   if (!row) return tg.answerCallback(cq.id, "Уже обработано.");
   try {
     await anthropic.beta.sessions.events.send(row.session_id, {
