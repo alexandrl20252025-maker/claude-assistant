@@ -20,6 +20,7 @@ export interface Env {
   MONITOR_DEPLOYMENT_ID: string;
   CHAT_BUDGET_CENTS: string;
   WORKSPACE: string;
+  QUICK_POLL_SECONDS?: string; // сколько секунд ждать короткий ответ без вебхука (0 — выключить)
 }
 
 export interface App {

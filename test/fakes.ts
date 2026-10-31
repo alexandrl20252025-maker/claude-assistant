@@ -194,6 +194,7 @@ export const ENV: Omit<Env, "DB"> = {
   MONITOR_DEPLOYMENT_ID: "depl_monitor",
   CHAT_BUDGET_CENTS: "300",
   WORKSPACE: "default",
+  QUICK_POLL_SECONDS: "0",
 };
 
 export function makeTestApp(overrides: Partial<Env> = {}) {

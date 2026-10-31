@@ -62,7 +62,7 @@ npm run deploy    # Cloudflare + Telegram -> печатает код привя�
 Потом:
 
 1. Откройте бота и отправьте `/start <код>` — бот привяжется к вам, остальным будет отвечать «частный бот».
-2. Чтобы ответы приходили сразу, а не с задержкой до 2 минут: Console → **Manage → Webhooks → Add endpoint**, URL `https://…workers.dev/anthropic` (его напечатает deploy), события `session.status_idled`, `session.status_terminated`, `deployment_run.failed`. Ключ подписи (`whsec_…`) отправьте боту командой `/key whsec_…` — бот сохранит его и удалит сообщение.
+2. Чтобы ответы приходили сразу, а не с задержкой до минуты: [Console → Webhooks](https://platform.claude.com/settings/workspaces/default/webhooks) → Add endpoint, URL `https://…workers.dev/anthropic` (его напечатает deploy), события `session.status_idled`, `session.status_terminated`, `session.budget_reached`, `deployment_run.failed`. Ключ подписи (`whsec_…`) отправьте боту командой `/key whsec_…` — бот сохранит его и удалит сообщение.
 
 `npm run setup` и `npm run deploy` можно запускать повторно: созданное найдётся по `state.json` и обновится. **Память при повторном setup не перезаписывается** — агент мог её дополнить.
 
@@ -97,6 +97,6 @@ Cloudflare: бесплатного тарифа обычно хватает. Е�
 ## Разработка
 
 ```bash
-npm test          # 21 тест: форматирование, сценарии бота, вебхуки, файлы, кнопки (без сети)
+npm test          # 23 теста: форматирование, сценарии бота, вебхуки, файлы, кнопки (без сети)
 npm run typecheck
 ```

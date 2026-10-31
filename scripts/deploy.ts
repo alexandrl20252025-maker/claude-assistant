@@ -180,9 +180,9 @@ async function main() {
      /start ${pairCode}
 
 2) Чтобы ответы приходили сразу, зарегистрируйте вебхук в Claude Console:
-     Manage → Webhooks → Add endpoint
+     https://platform.claude.com/settings/workspaces/default/webhooks → Add endpoint
      URL:     ${url}/anthropic
-     События: session.status_idled, session.status_terminated, deployment_run.failed
+     События: session.status_idled, session.status_terminated, session.budget_reached, deployment_run.failed
    Потом отправьте боту:  /key whsec_…  (ключ подписи, который покажет Console)
    Без вебхука бот тоже работает, но ответ приходит с задержкой до 2 минут.
 `);
