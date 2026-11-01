@@ -6,6 +6,7 @@ import type {
 } from "@anthropic-ai/sdk/resources/beta/sessions/events";
 import { agentIds, App, consoleUrl, formatCents, memoryResource, sleep } from "./app";
 import type { SessionRow } from "./db";
+import { familyMemoryResource } from "./constants";
 import { escapeHtml } from "./format";
 
 /** Разговор начинается заново, если в чате не было сообщений столько времени. */
@@ -28,15 +29,25 @@ export class UserFacingError extends Error {}
 // Сессии разговора в чате
 // ---------------------------------------------------------------------------
 
+/** Какой агент и какая память у этого чата: член семьи — свой агент и своя память. */
+async function chatProfile(app: App, chatId: number) {
+  const user = await app.db.getUser(chatId);
+  if (user?.role === "family" && user.memory_store_id) {
+    return { agent: app.env.FAMILY_AGENT_ID, memory: familyMemoryResource(user.memory_store_id), who: user.name ?? "семья" };
+  }
+  return { agent: app.env.AGENT_ID, memory: memoryResource(app.env), who: user?.name ?? "владелец" };
+}
+
 export async function createChatSession(app: App, chatId: number): Promise<string> {
   const stamp = new Date().toLocaleString("ru-RU", { timeZone: "Europe/Moscow" });
+  const profile = await chatProfile(app, chatId);
   const session = await app.anthropic.beta.sessions.create({
-    agent: app.env.AGENT_ID,
+    agent: profile.agent,
     environment_id: app.env.ENVIRONMENT_ID,
-    title: `Telegram · ${stamp}`,
+    title: `Telegram · ${profile.who} · ${stamp}`,
     metadata: { chat_id: String(chatId), kind: "chat" },
     budget: { type: "limit", max_list_cost: { amount: app.env.CHAT_BUDGET_CENTS || "300", currency: "USD" } },
-    resources: [memoryResource(app.env)],
+    resources: [profile.memory],
   });
   await app.db.addSession(session.id, chatId, "chat");
   await app.db.setChatSession(chatId, session.id);

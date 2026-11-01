@@ -12,10 +12,10 @@
   },
   "digest": {
     "cron": "0 8 * * *",
-    "budget_usd": 1.5
+    "budget_usd": 3
   },
   "monitor": {
     "cron": "0 10,17 * * 1-5",
-    "budget_usd": 1.5
+    "budget_usd": 3
   }
 }

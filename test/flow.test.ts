@@ -333,3 +333,113 @@ test("быстрый путь: короткий ответ забирается 
   assert.ok(Date.now() - t0 < 1000, "вернулся сразу после доставки");
   assert.equal(tg.sent().at(-1)!.body.text, "быстрый ответ");
 });
+
+// ---------------- Несколько пользователей ----------------
+
+const WIFE = 777;
+const ALT = 888;
+
+async function invite(app: Parameters<typeof handleUpdate>[0], role: "self" | "family") {
+  await handleUpdate(app, text("/invite"));
+  const kb = tg.sent().at(-1)!.body.reply_markup as any;
+  assert.ok(kb, "кнопки выбора");
+  await handleUpdate(app, { update_id: upd++, callback_query: { id: "cqi", from: { id: OWNER }, data: `inv:${role}`, message: { message_id: 1, chat: { id: OWNER, type: "private" }, date: 0 } } });
+  const edited = tg.calls.filter((c) => c.method === "editMessageText").at(-1)!;
+  const code = String(edited.body.text).match(/\?start=([A-Z0-9]+)/)![1];
+  return code;
+}
+
+test("приглашение своего второго аккаунта: общая память и юридический агент, дайджест доступен", async () => {
+  const { app, anthropic } = await paired();
+  const code = await invite(app, "self");
+  await handleUpdate(app, text(`/start ${code}`, { from: { id: ALT, first_name: "Алекс" }, chat: { id: ALT, type: "private" } }, ALT));
+  assert.match(String(tg.sent().find((c) => c.body.chat_id === ALT && /подключены/.test(String(c.body.text)))?.body.text), /подключены/);
+  assert.ok(tg.sent().some((c) => c.body.chat_id === OWNER && /Подключён: Алекс \(ваш аккаунт\)/.test(String(c.body.text))));
+
+  await handleUpdate(app, text("вопрос со второго аккаунта", {}, ALT));
+  const created = anthropic.created.at(-1) as any;
+  assert.equal(created.agent, "agent_chat");
+  assert.equal(created.resources[0].memory_store_id, "memstore_1");
+  assert.equal(created.metadata.chat_id, String(ALT));
+
+  await handleUpdate(app, text("/digest", {}, ALT));
+  assert.deepEqual(anthropic.runs, ["depl_digest"]);
+  await handleUpdate(app, text("/invite", {}, ALT));
+  assert.match(String(tg.sent().at(-1)!.body.text), /только владельцу/);
+
+  // код одноразовый
+  await handleUpdate(app, text(`/start ${code}`, {}, 999));
+  assert.match(String(tg.sent().at(-1)!.body.text), /не подошёл/);
+});
+
+test("приглашение члена семьи: свой агент и своя память, без дайджеста и управления", async () => {
+  const { app, anthropic } = await paired();
+  const code = await invite(app, "family");
+  await handleUpdate(app, text(`/start ${code}`, { from: { id: WIFE, first_name: "Мария" }, chat: { id: WIFE, type: "private" } }, WIFE));
+  assert.equal(anthropic.memoryStores.length, 1);
+  assert.equal(anthropic.memoryStores[0].name, "personal");
+  assert.match(anthropic.memoryStores[0].memories[0].content, /Имя: Мария/);
+
+  await handleUpdate(app, text("что приготовить на ужин?", {}, WIFE));
+  const created = anthropic.created.at(-1) as any;
+  assert.equal(created.agent, "agent_family");
+  assert.equal(created.resources[0].memory_store_id, anthropic.memoryStores[0].id);
+  assert.notEqual(created.resources[0].memory_store_id, "memstore_1", "память владельца не подключается");
+
+  await handleUpdate(app, text("/digest", {}, WIFE));
+  await handleUpdate(app, text("/users", {}, WIFE));
+  assert.deepEqual(anthropic.runs, []);
+  assert.match(String(tg.sent().at(-1)!.body.text), /только владельцу/);
+
+  // ответ агента приходит ей, а не владельцу
+  const sid = anthropic.sent.at(-1)!.sessionId;
+  anthropic.push(sid, { type: "agent.message", content: [{ type: "text", text: "Паста с овощами" }] });
+  anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "end_turn" }, stop_details: null });
+  await processSession(app, sid);
+  assert.equal(tg.sent().at(-1)!.body.chat_id, WIFE);
+
+  // её запрос разрешения может подтвердить она, но не посторонний
+  const ask = anthropic.push(sid, { type: "agent.tool_use", name: "bash", input: { command: "ls" }, evaluated_permission: "ask" });
+  anthropic.push(sid, { type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: [ask.id] }, stop_details: null });
+  await processSession(app, sid);
+  const data = (tg.sent().at(-1)!.body.reply_markup as any).inline_keyboard[0][0].callback_data;
+  await handleUpdate(app, { update_id: upd++, callback_query: { id: "x", from: { id: ALT }, data } });
+  assert.ok(!anthropic.sent.some((e) => e.events[0].type === "user.tool_confirmation"));
+  await handleUpdate(app, { update_id: upd++, callback_query: { id: "y", from: { id: WIFE }, data } });
+  assert.equal(anthropic.sent.at(-1)!.events[0].type, "user.tool_confirmation");
+});
+
+test("/users и /remove: отключённый больше не может писать", async () => {
+  const { app } = await paired();
+  const code = await invite(app, "family");
+  await handleUpdate(app, text(`/start ${code}`, { from: { id: WIFE, first_name: "Мария" }, chat: { id: WIFE, type: "private" } }, WIFE));
+  await handleUpdate(app, text("/users"));
+  const list = String(tg.sent().at(-1)!.body.text);
+  assert.match(list, /владелец/);
+  assert.match(list, /Мария — семья — <code>777<\/code>/);
+  await handleUpdate(app, text(`/remove ${OWNER}`));
+  assert.match(String(tg.sent().at(-1)!.body.text), /Себя отключить нельзя/);
+  await handleUpdate(app, text("/remove 777"));
+  assert.match(String(tg.sent().at(-1)!.body.text), /Отключил/);
+  await handleUpdate(app, text("привет", {}, WIFE));
+  assert.match(String(tg.sent().at(-1)!.body.text), /^Это частный бот\./);
+});
+
+test("просроченный код не подходит", async () => {
+  const { app } = await paired();
+  await app.db.createInvite("OLDCODE1", "self", -1000);
+  await handleUpdate(app, text("/start OLDCODE1", {}, ALT));
+  assert.match(String(tg.sent().at(-1)!.body.text), /не подошёл/);
+});
+
+test("код принимается в любом виде: после голого /start, отдельным сообщением, маленькими буквами", async () => {
+  const { app } = await paired();
+  const code = await invite(app, "self");
+  const edited = String(tg.calls.filter((c) => c.method === "editMessageText").at(-1)!.body.text);
+  assert.match(edited, new RegExp(`https://t\\.me/test_bot\\?start=${code}`), "в приглашении есть ссылка");
+
+  await handleUpdate(app, text("/start", {}, ALT));
+  assert.match(String(tg.sent().at(-1)!.body.text), /пришлите код приглашения/);
+  await handleUpdate(app, text(`мой код: ${code.toLowerCase()}`, {}, ALT));
+  assert.equal((await app.db.getUser(ALT))?.role, "self");
+});

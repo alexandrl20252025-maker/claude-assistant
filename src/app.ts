@@ -14,6 +14,7 @@ export interface Env {
   // обычные переменные (их проставляет scripts/deploy.ts из state.json)
   AGENT_ID: string; // агент для разговоров в чате
   SCHEDULED_AGENT_ID: string; // агент для дайджеста и мониторинга
+  FAMILY_AGENT_ID: string; // агент для членов семьи (без юридического профиля)
   ENVIRONMENT_ID: string;
   MEMORY_STORE_ID: string;
   DIGEST_DEPLOYMENT_ID: string;
@@ -40,7 +41,7 @@ export function makeApp(env: Env): App {
 }
 
 export function agentIds(env: Env): string[] {
-  return [env.AGENT_ID, env.SCHEDULED_AGENT_ID].filter(Boolean);
+  return [env.AGENT_ID, env.SCHEDULED_AGENT_ID, env.FAMILY_AGENT_ID].filter(Boolean);
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
