@@ -126,7 +126,7 @@ function agentBody(name: string, model: string, effort: string, promptFile: stri
         default_config: { enabled: true, permission_policy: { type: "auto" as const } },
         configs: [
           { type: "web_search" as const, name: "web_search" as const, enabled: true },
-          { type: "web_fetch" as const, name: "web_fetch" as const, enabled: true, max_content_tokens: 30000 },
+          { type: "web_fetch" as const, name: "web_fetch" as const, enabled: true, max_content_tokens: 12000 },
         ],
       },
     ],
