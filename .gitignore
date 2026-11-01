@@ -3,3 +3,4 @@ node_modules/
 wrangler.toml
 .dev.vars
 *.log
+scripts/_*.ts
